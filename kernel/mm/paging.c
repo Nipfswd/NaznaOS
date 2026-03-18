@@ -29,6 +29,10 @@ void nazna_panic(const char *msg);
 /* Physical address of the bootstrap page directory.
  * Used by PMM to reserve the frame and by paging to know the base.
  * Defined here and referenced via extern in pmm.c.
+ *
+ * NOTE: boot/boot.s installs this page directory in CR3 and identity-maps
+ * the first 4 MiB using first_page_table. The linker places these structures
+ * at 1 MiB, so they are within the identity-mapped region.
  */
 u32 paging_bootstrap_page_directory_phys = 0;
 
@@ -99,11 +103,17 @@ void paging_init(void)
     u32 cr3 = paging_read_cr3();
     paging_bootstrap_page_directory_phys = cr3 & ~0xFFFu;
 
-    /* Install the self-mapping entry in the last PDE.
-     * We assume the bootstrap page directory itself resides in low memory
-     * and is identity-mapped, so we can access it via its physical address.
+    /* At this point, boot/boot.s has:
+     *   - placed page_directory in low memory (1 MiB),
+     *   - loaded CR3 with its physical address,
+     *   - enabled paging with identity mapping of first 4 MiB.
+     *
+     * Therefore, paging_bootstrap_page_directory_phys is a valid virtual
+     * address into the identity-mapped region and can be dereferenced.
      */
     u32 *pd_phys_virt = (u32 *)paging_bootstrap_page_directory_phys;
+
+    /* Install the self-mapping entry in the last PDE. */
     pd_phys_virt[SELF_MAP_INDEX] =
         paging_bootstrap_page_directory_phys | PAGE_PRESENT | PAGE_RW;
 
@@ -232,6 +242,10 @@ int paging_is_mapped(u32 virt)
  *   3. Verify paging_get_phys reports the same physical frame.
  *   4. Touch the memory.
  *   5. Unmap and free the frame.
+ *
+ * NOTE: test_virt is chosen at 4 MiB, just above the identity-mapped region
+ * established by bootstrap. This exercises dynamic page-table allocation and
+ * self-mapped access.
  */
 void paging_self_test(void)
 {

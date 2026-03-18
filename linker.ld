@@ -1,22 +1,21 @@
-/* NaznaOS - Linker Script (x86, Multiboot v1 kernel) */
-/* Copyright (c) 2026 */
-/* NoahBajsToa */
-/* SPDX-License-Identifier: MIT */
+/* NaznaOS - Linker script
+ *
+ * Responsibilities:
+ *   - Place the kernel at 1 MiB.
+ *   - Ensure bootstrap paging structures (page_directory, first_page_table)
+ *     reside in low memory (< 4 MiB), so they are identity-mapped at boot.
+ */
 
 ENTRY(_start)
 
 SECTIONS
 {
-    /* Link the kernel to run at 1 MiB in virtual/physical memory */
+    /* Load kernel at 1 MiB physical. */
     . = 1M;
 
-    /* Mark kernel start symbol */
-    _kernel_start = .;
-
-    /* Place Multiboot header at the very start of .text so GRUB can find it */
     .text ALIGN(4K) :
     {
-        KEEP(*(.multiboot))
+        *(.multiboot)
         *(.text*)
     }
 
@@ -32,17 +31,7 @@ SECTIONS
 
     .bss ALIGN(4K) :
     {
-        *(COMMON)
         *(.bss*)
-    }
-
-    /* Mark kernel end symbol */
-    _kernel_end = .;
-
-    /DISCARD/ :
-    {
-        *(.comment)
-        *(.eh_frame)
-        *(.note*)
+        *(COMMON)
     }
 }

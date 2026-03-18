@@ -1,6 +1,13 @@
-/* NaznaOS - Multiboot v1 Boot Entry (x86 32-bit) */
-/* Copyright (c) 2026 NoahBajsToa */
-/* SPDX-License-Identifier: MIT */
+/* NaznaOS - Multiboot entry and bootstrap paging
+ *
+ * Responsibilities:
+ *   - Provide Multiboot header for GRUB.
+ *   - Set up a minimal stack.
+ *   - Install a bootstrap page directory and page table:
+ *       - identity-map first 4 MiB (0x00000000 - 0x003FFFFF).
+ *   - Enable paging with CR3 pointing to the bootstrap page directory.
+ *   - Jump to nazna_kernel_main(multiboot_magic, multiboot_info_addr).
+ */
 
 .set ALIGN,    1<<0
 .set MEMINFO,  1<<1
@@ -8,13 +15,7 @@
 .set MAGIC,    0x1BADB002
 .set CHECKSUM, -(MAGIC + FLAGS)
 
-/*
- * Multiboot header:
- * - Placed in a dedicated .multiboot section
- * - Marked allocatable so it ends up in a loadable segment
- * - Linker script ensures this section is kept at the start of .text
- */
-    .section .multiboot,"a"
+    .section .multiboot
     .align 4
     .long MAGIC
     .long FLAGS
@@ -24,24 +25,64 @@
     .global _start
     .extern nazna_kernel_main
 
-_start:
-    cli
+/* Bootstrap page directory and first page table.
+ * These are placed by the linker in low memory (starting at 1 MiB),
+ * and we use them as physical addresses before paging is enabled.
+ */
+    .extern paging_bootstrap_page_directory_phys
 
-    mov $stack_top, %esp
+    .align 4096
+page_directory:
+    .long first_page_table | 0x003    /* Present | RW, identity-mapped PT */
+    .rept 1023
+    .long 0
+    .endr
 
-    # Multiboot v1: EAX = magic, EBX = multiboot info pointer
-    push %ebx
-    push %eax
+    .align 4096
+first_page_table:
+    /* Map 0x00000000 - 0x003FFFFF (first 4 MiB) identity. */
+    .set i, 0
+1:
+    .if i < 1024
+        .long (i * 0x1000) | 0x003    /* Present | RW */
+        .set i, i + 1
+        .goto 1
+    .endif
 
-    call nazna_kernel_main
-
-.hang:
-    cli
-    hlt
-    jmp .hang
-
+/* Simple stack in .bss */
     .section .bss
     .align 16
 stack_bottom:
-    .skip 16384
+    .skip 4096
 stack_top:
+
+    .section .text
+_start:
+    /* Set up stack */
+    mov $stack_top, %esp
+
+    /* Save Multiboot parameters:
+     *  - %eax: multiboot magic
+     *  - %ebx: multiboot info address
+     */
+    push %ebx        /* arg1: multiboot_info_addr */
+    push %eax        /* arg0: multiboot_magic */
+
+    /* Load CR3 with physical address of page_directory. */
+    mov $page_directory, %eax
+    mov %eax, %cr3
+
+    /* Enable paging: set PG (bit 31) and PE (bit 0) in CR0. */
+    mov %cr0, %eax
+    or  $0x80000001, %eax
+    mov %eax, %cr0
+
+    /* At this point, paging is enabled with identity mapping of first 4 MiB.
+     * Jump to C kernel entry: nazna_kernel_main(multiboot_magic, multiboot_info_addr).
+     */
+    call nazna_kernel_main
+
+halt:
+    cli
+    hlt
+    jmp halt
