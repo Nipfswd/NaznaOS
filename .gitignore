@@ -1,4 +1,7 @@
 build/
 iso/
+
+## BUILD FILES
+*.bin
 *.o
 *.iso

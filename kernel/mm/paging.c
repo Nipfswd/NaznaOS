@@ -13,9 +13,7 @@
 #include "mm/pmm.h"
 #include "nazna/kernel.h"
 
-/* Local memset implementation to avoid relying on a global libc symbol.
- * This removes the unresolved 'memset' linker dependency.
- */
+/* Local memset implementation to avoid relying on a global libc symbol. */
 static void *paging_memset(void *s, int c, unsigned long n)
 {
     unsigned char *p = (unsigned char *)s;
@@ -25,7 +23,7 @@ static void *paging_memset(void *s, int c, unsigned long n)
     return s;
 }
 
-/* Panic handler from kernel/kernel.c. */
+/* Panic handler from kernel core. */
 void nazna_panic(const char *msg);
 
 /* Physical address of the bootstrap page directory.
@@ -56,7 +54,7 @@ static u32 *paging_get_page_directory(void)
 
 /* Get pointer to the page table for a given virtual address.
  * If create != 0 and the table does not exist, allocate a frame from PMM,
- * zero it, and install it into the page directory.
+ * install it into the page directory, and zero it via the self-mapped view.
  */
 static u32 *paging_get_page_table(u32 virt, int create)
 {
@@ -75,26 +73,22 @@ static u32 *paging_get_page_table(u32 virt, int create)
             nazna_panic("paging_get_page_table: out of frames");
         }
 
-        /* Zero the new page table via a temporary identity mapping assumption:
-         * we rely on the fact that the frame is accessible via its physical
-         * address in the current identity-mapped region or via self-mapping
-         * once installed.
-         */
-        u32 *pt_virt = (u32 *)(pt_phys);
-        paging_memset(pt_virt, 0, PAGE_SIZE);
-
         /* Install into page directory with RW, present. */
         pd[pd_index] = pt_phys | PAGE_PRESENT | PAGE_RW;
 
-        /* Invalidate the self-mapped PDE entry for this table. */
-        __asm__ __volatile__("invlpg (%0)" :: "r"(pt_virt) : "memory");
+        /* Now that the PDE is installed, the page table is visible via
+         * the self-mapped address:
+         *   (SELF_MAP_INDEX << 22) | (pd_index << 12)
+         */
+        u32 *pt = (u32 *)((SELF_MAP_INDEX << 22) | (pd_index << 12));
 
-        pt_entry = pd[pd_index];
+        /* Zero the new page table via its self-mapped virtual address. */
+        paging_memset(pt, 0, PAGE_SIZE);
+
+        return pt;
     }
 
-    /* Self-mapped page table:
-     *   (SELF_MAP_INDEX << 22) | (pd_index << 12)
-     */
+    /* Existing page table: use its self-mapped address. */
     u32 *pt = (u32 *)((SELF_MAP_INDEX << 22) | (pd_index << 12));
     return pt;
 }
@@ -105,9 +99,16 @@ void paging_init(void)
     u32 cr3 = paging_read_cr3();
     paging_bootstrap_page_directory_phys = cr3 & ~0xFFFu;
 
-    /* Ensure the self-mapping entry is present.
-     * For now we assume boot/early paging has installed the self-map.
+    /* Install the self-mapping entry in the last PDE.
+     * We assume the bootstrap page directory itself resides in low memory
+     * and is identity-mapped, so we can access it via its physical address.
      */
+    u32 *pd_phys_virt = (u32 *)paging_bootstrap_page_directory_phys;
+    pd_phys_virt[SELF_MAP_INDEX] =
+        paging_bootstrap_page_directory_phys | PAGE_PRESENT | PAGE_RW;
+
+    /* Reload CR3 to ensure the new self-mapping PDE is visible. */
+    __asm__ __volatile__("mov %0, %%cr3" :: "r"(paging_bootstrap_page_directory_phys) : "memory");
 }
 
 /* Map a virtual page to a physical frame with flags. */
